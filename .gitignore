@@ -1,0 +1,30 @@
+/dotfiles.tar
+
+# Local working directory
+/_tmp/
+
+# Publish only the server files and required repository metadata
+/*
+!/.gitignore
+!/README.md
+!/archinstall.sh
+!/archconfig1.sh
+!/archconfig2.sh
+!/archconfig3.sh
+
+# Local settings and secrets
+.env
+.env.*
+!.env.example
+*.local.env
+
+# Local agent directories
+.claude/*
+.codex/*
+
+# Internal working documents (kept local, not published)
+/AGENTS.md
+/TECH_SCOPE.md
+/TODO.md
+/CHANGELOG.md
+/CLAUDE.md
