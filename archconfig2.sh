@@ -280,7 +280,7 @@ audit_checkpoint "ocena pierwszego bootu przed instalacją pakietów etapu 2"
 
 SYSTEM_HARDWARE_PACKAGES=(
     acpi apparmor brightnessctl cameractrls clamav firejail fprintd fwupd
-    gptfdisk linux-headers sof-firmware tlp udisks2 ufw upower
+    gptfdisk linux-headers lvm2 sof-firmware tlp udisks2 ufw upower vulkan-tools
 )
 if [[ -n "$STORAGE_TOOL_PACKAGE" ]]; then
     SYSTEM_HARDWARE_PACKAGES+=("$STORAGE_TOOL_PACKAGE")
@@ -312,10 +312,10 @@ install_pacman_group "Wayland, Sway, portale i keyring" \
     "${WAYLAND_PACKAGES[@]}"
 
 install_pacman_group "Narzędzia CLI, administracja i development" \
-    android-tools ansible asciidoctor atftp cmake direnv fastfetch fd fnm git glow go htop \
-    hunspell hunspell-pl man-db man-pages nmap npm perl-image-exiftool python-pip \
-    python-qdarkstyle qrencode reflector ripgrep rsync shellcheck speedtest-cli task \
-    terraform tigervnc tmux tor unzip wget yt-dlp zip zsh
+    android-tools ansible asciidoctor atftp cloud-image-utils cmake direnv fastfetch fd fnm \
+    git github-cli gitleaks glab glow go htop hunspell hunspell-pl man-db man-pages nmap npm \
+    perl-image-exiftool python-pip python-qdarkstyle qrencode reflector ripgrep rsync \
+    shellcheck speedtest-cli task terraform tigervnc tmux tor unzip wget yt-dlp zip zsh
 
 install_pacman_group "Aplikacje użytkowe, biurowe i multimedialne" \
     android-file-transfer baobab calibre chromium darktable drawio-desktop electrum \
@@ -326,7 +326,7 @@ install_pacman_group "Aplikacje użytkowe, biurowe i multimedialne" \
     signal-desktop thunderbird thunar vlc xdg-user-dirs xed zathura-pdf-poppler
 
 install_pacman_group "Usługi, synchronizacja i wirtualizacja" \
-    docker ollama syncthing virtualbox virtualbox-host-dkms
+    docker ollama ollama-vulkan syncthing virtualbox virtualbox-host-dkms
 
 echo -e "\033[36m<<<<<===== Włączenie AppArmor =====>>>>>\033[0m"
 sudo systemctl enable apparmor.service

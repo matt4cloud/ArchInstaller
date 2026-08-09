@@ -5,20 +5,41 @@
 set -euo pipefail
 
 ENV_FILE="./archinstaller.env"
-KEEPASSXC_VERSION="2.7.12"
 BASE_URL="https://it.mattromanow.com/downloads/arch"
 USER_SYSTEMD_DIR="${HOME}/.config/systemd/user"
 SWAY_CONFIG="${HOME}/.config/sway/config"
 PORTAL_CONFIG="${HOME}/.config/xdg-desktop-portal/sway-portals.conf"
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+KEEPASSXC_RELEASE_JSON=""
+KEEPASSXC_STAGING_DIR=""
 
 readonly SWAY_IMPORT_SYSTEMD='exec systemctl --user import-environment DISPLAY WAYLAND_DISPLAY SWAYSOCK XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP SSH_AUTH_SOCK GNOME_KEYRING_CONTROL'
 readonly SWAY_IMPORT_DBUS='exec dbus-update-activation-environment --systemd DISPLAY WAYLAND_DISPLAY SWAYSOCK XDG_CURRENT_DESKTOP XDG_SESSION_TYPE XDG_SESSION_DESKTOP SSH_AUTH_SOCK GNOME_KEYRING_CONTROL'
 readonly SWAY_START_KSECRET='exec sh -c '\''pgrep -x ksecretd >/dev/null || QT_QPA_PLATFORM=wayland /usr/bin/ksecretd'\'''
+readonly KEEPASSXC_RELEASE_API="https://api.github.com/repos/keepassxreboot/keepassxc/releases/latest"
+readonly KEEPASSXC_SIGNING_KEY_URL="https://keepassxc.org/keepassxc_master_signing_key.asc"
+readonly KEEPASSXC_SIGNING_FINGERPRINT="BF5A669F2272CF4324C1FDA8CFB4C2166397D0D2"
+readonly KEEPASSXC_2712_PATCH_URL="https://github.com/keepassxreboot/keepassxc/commit/139c0beb46d5a44244681202b7a936c4a1dbb133.patch"
 
 stop_sudo_keepalive() {
     if [[ -n "${SUDO_KEEPALIVE_PID:-}" ]]; then
         kill "$SUDO_KEEPALIVE_PID" 2>/dev/null || true
+    fi
+}
+
+cleanup_runtime() {
+    stop_sudo_keepalive
+
+    if [[ -n "$KEEPASSXC_RELEASE_JSON" &&
+          -f "$KEEPASSXC_RELEASE_JSON" &&
+          "$KEEPASSXC_RELEASE_JSON" == /tmp/keepassxc-release.* ]]; then
+        rm -f -- "$KEEPASSXC_RELEASE_JSON"
+    fi
+
+    if [[ -n "$KEEPASSXC_STAGING_DIR" &&
+          -d "$KEEPASSXC_STAGING_DIR" &&
+          "$KEEPASSXC_STAGING_DIR" == "${HOME}/Downloads/.keepassxc-download."* ]]; then
+        rm -rf -- "$KEEPASSXC_STAGING_DIR"
     fi
 }
 
@@ -293,6 +314,269 @@ validate_sway_keyring_order() {
     (( ksecretd_line < proton_line ))
 }
 
+resolve_latest_keepassxc_release() {
+    local release_json="$1"
+
+    python3 - "$release_json" <<'PY'
+import json
+import re
+import sys
+from urllib.parse import urlparse
+
+
+def fail(message):
+    raise SystemExit(f"Nie można zaakceptować wydania KeePassXC: {message}")
+
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        release = json.load(handle)
+except (OSError, json.JSONDecodeError) as error:
+    fail(f"niepoprawna odpowiedź JSON ({error})")
+
+if not isinstance(release, dict):
+    fail("odpowiedź JSON nie jest obiektem wydania")
+
+if release.get("draft") is not False:
+    fail("odpowiedź wskazuje draft")
+if release.get("prerelease") is not False:
+    fail("odpowiedź wskazuje prerelease")
+
+version = release.get("tag_name")
+if not isinstance(version, str) or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+    fail("tag nie jest numerem X.Y.Z")
+
+release_url = release.get("html_url")
+parsed_release_url = urlparse(release_url if isinstance(release_url, str) else "")
+if (
+    parsed_release_url.scheme != "https"
+    or parsed_release_url.netloc != "github.com"
+    or parsed_release_url.path != f"/keepassxreboot/keepassxc/releases/tag/{version}"
+):
+    fail("niepoprawny adres strony wydania")
+
+expected_names = [
+    f"keepassxc-{version}-src.tar.xz",
+    f"keepassxc-{version}-src.tar.xz.sig",
+    f"keepassxc-{version}-src.tar.xz.DIGEST",
+]
+assets = release.get("assets")
+if not isinstance(assets, list):
+    fail("brak listy artefaktów")
+
+resolved_urls = []
+for name in expected_names:
+    matching_assets = [
+        asset
+        for asset in assets
+        if isinstance(asset, dict) and asset.get("name") == name
+    ]
+    if len(matching_assets) != 1:
+        fail(f"oczekiwano dokładnie jednego artefaktu {name}")
+
+    asset_url = matching_assets[0].get("browser_download_url")
+    parsed_asset_url = urlparse(asset_url if isinstance(asset_url, str) else "")
+    expected_path = f"/keepassxreboot/keepassxc/releases/download/{version}/{name}"
+    if (
+        parsed_asset_url.scheme != "https"
+        or parsed_asset_url.netloc != "github.com"
+        or parsed_asset_url.path != expected_path
+        or parsed_asset_url.query
+        or parsed_asset_url.fragment
+    ):
+        fail(f"niepoprawny adres artefaktu {name}")
+    resolved_urls.append(asset_url)
+
+print(version)
+print(release_url)
+print(*resolved_urls, sep="\n")
+PY
+}
+
+discard_keepassxc_staging() {
+    if [[ -n "$KEEPASSXC_RELEASE_JSON" &&
+          -f "$KEEPASSXC_RELEASE_JSON" &&
+          "$KEEPASSXC_RELEASE_JSON" == /tmp/keepassxc-release.* ]]; then
+        rm -f -- "$KEEPASSXC_RELEASE_JSON"
+    fi
+    KEEPASSXC_RELEASE_JSON=""
+
+    if [[ -n "$KEEPASSXC_STAGING_DIR" &&
+          -d "$KEEPASSXC_STAGING_DIR" &&
+          "$KEEPASSXC_STAGING_DIR" == "${HOME}/Downloads/.keepassxc-download."* ]]; then
+        rm -rf -- "$KEEPASSXC_STAGING_DIR"
+    fi
+    KEEPASSXC_STAGING_DIR=""
+}
+
+download_keepassxc_release() {
+    local version="$1"
+    local archive_url="$2"
+    local signature_url="$3"
+    local digest_url="$4"
+    local archive="keepassxc-${version}-src.tar.xz"
+    local signature="${archive}.sig"
+    local digest="${archive}.DIGEST"
+    local key="keepassxc_master_signing_key.asc"
+    local gnupg_home
+    local actual_fingerprint
+    local download_dir="${HOME}/Downloads/keepassxc"
+
+    if ! mkdir -p "${HOME}/Downloads"; then
+        echo -e "\033[31mNie udało się przygotować katalogu Downloads dla KeePassXC.\033[0m"
+        return 1
+    fi
+    if [[ -e "$download_dir" || -L "$download_dir" ]]; then
+        echo -e "\033[31mDocelowy katalog KeePassXC już istnieje: ${download_dir}\033[0m"
+        return 1
+    fi
+    if ! KEEPASSXC_STAGING_DIR="$(mktemp -d "${HOME}/Downloads/.keepassxc-download.XXXXXX")"; then
+        echo -e "\033[31mNie udało się utworzyć katalogu tymczasowego KeePassXC.\033[0m"
+        return 1
+    fi
+
+    if ! curl -fL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+        "$archive_url" -o "${KEEPASSXC_STAGING_DIR}/${archive}"; then
+        echo -e "\033[31mNie udało się pobrać archiwum KeePassXC.\033[0m"
+        return 1
+    fi
+    if ! curl -fL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+        "$signature_url" -o "${KEEPASSXC_STAGING_DIR}/${signature}"; then
+        echo -e "\033[31mNie udało się pobrać podpisu KeePassXC.\033[0m"
+        return 1
+    fi
+    if ! curl -fL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+        "$digest_url" -o "${KEEPASSXC_STAGING_DIR}/${digest}"; then
+        echo -e "\033[31mNie udało się pobrać digestu KeePassXC.\033[0m"
+        return 1
+    fi
+    if ! curl -fL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+        "$KEEPASSXC_SIGNING_KEY_URL" -o "${KEEPASSXC_STAGING_DIR}/${key}"; then
+        echo -e "\033[31mNie udało się pobrać klucza KeePassXC.\033[0m"
+        return 1
+    fi
+
+    if ! (
+        cd "$KEEPASSXC_STAGING_DIR" &&
+            sha256sum -c "$digest"
+    ); then
+        echo -e "\033[31mSuma SHA-256 archiwum KeePassXC jest niezgodna.\033[0m"
+        return 1
+    fi
+
+    gnupg_home="${KEEPASSXC_STAGING_DIR}/.gnupg"
+    if ! install -d -m 0700 "$gnupg_home"; then
+        echo -e "\033[31mNie udało się przygotować tymczasowego keyringu KeePassXC.\033[0m"
+        return 1
+    fi
+    if ! actual_fingerprint="$(
+        gpg --homedir "$gnupg_home" --batch --with-colons \
+            --import-options show-only --import "${KEEPASSXC_STAGING_DIR}/${key}" 2>/dev/null |
+            awk -F: '$1 == "fpr" { print $10; exit }'
+    )"; then
+        echo -e "\033[31mNie udało się odczytać fingerprintu klucza KeePassXC.\033[0m"
+        return 1
+    fi
+    if [[ "$actual_fingerprint" != "$KEEPASSXC_SIGNING_FINGERPRINT" ]]; then
+        echo -e "\033[31mFingerprint klucza KeePassXC jest niezgodny z oczekiwanym.\033[0m"
+        return 1
+    fi
+    if ! gpg --homedir "$gnupg_home" --batch \
+        --import "${KEEPASSXC_STAGING_DIR}/${key}"; then
+        echo -e "\033[31mNie udało się zaimportować klucza KeePassXC do tymczasowego keyringu.\033[0m"
+        return 1
+    fi
+    if ! gpg --homedir "$gnupg_home" --batch \
+        --verify "${KEEPASSXC_STAGING_DIR}/${signature}" \
+        "${KEEPASSXC_STAGING_DIR}/${archive}"; then
+        echo -e "\033[31mPodpis archiwum KeePassXC jest niepoprawny.\033[0m"
+        return 1
+    fi
+    if ! rm -rf -- "$gnupg_home"; then
+        echo -e "\033[31mNie udało się usunąć tymczasowego keyringu KeePassXC.\033[0m"
+        return 1
+    fi
+
+    if [[ "$version" == "2.7.12" ]]; then
+        if ! curl -fL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            "$KEEPASSXC_2712_PATCH_URL" -o "${KEEPASSXC_STAGING_DIR}/keepassxc-botan-3.10.patch"; then
+            echo -e "\033[33mNie udało się pobrać opcjonalnego patcha Botan dla KeePassXC 2.7.12.\033[0m"
+            log_line "WARN" "KEEPASSXC_PATCH_FAILED" \
+                "nie pobrano opcjonalnego patcha Botan dla KeePassXC 2.7.12"
+        fi
+    else
+        echo "Brak patcha specyficznego dla KeePassXC ${version}; stary patch 2.7.12 został pominięty."
+    fi
+
+    if ! mv -- "$KEEPASSXC_STAGING_DIR" "$download_dir"; then
+        echo -e "\033[31mNie udało się zapisać zweryfikowanych plików KeePassXC.\033[0m"
+        return 1
+    fi
+    KEEPASSXC_STAGING_DIR=""
+    echo "Zweryfikowane źródła KeePassXC ${version} zapisano w ${download_dir}."
+    echo "Kompilację i instalację wykonaj ręcznie po instalacji systemu."
+}
+
+offer_keepassxc_release() {
+    local release_data
+    local confirmation
+    local version
+    local release_url
+    local archive_url
+    local signature_url
+    local digest_url
+    local -a release_fields
+
+    echo -e "\033[36m<<<<<===== Ustalenie aktualnego wydania KeePassXC =====>>>>>\033[0m"
+    if ! KEEPASSXC_RELEASE_JSON="$(mktemp /tmp/keepassxc-release.XXXXXX)"; then
+        echo -e "\033[31mNie udało się utworzyć pliku tymczasowego dla metadanych KeePassXC.\033[0m"
+        return 1
+    fi
+    if ! curl -fL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+        -H 'Accept: application/vnd.github+json' \
+        -H 'X-GitHub-Api-Version: 2022-11-28' \
+        -H 'User-Agent: ArchInstaller' \
+        "$KEEPASSXC_RELEASE_API" -o "$KEEPASSXC_RELEASE_JSON"; then
+        echo -e "\033[31mNie udało się pobrać informacji o aktualnym wydaniu KeePassXC.\033[0m"
+        return 1
+    fi
+    if ! release_data="$(resolve_latest_keepassxc_release "$KEEPASSXC_RELEASE_JSON")"; then
+        return 1
+    fi
+    rm -f -- "$KEEPASSXC_RELEASE_JSON"
+    KEEPASSXC_RELEASE_JSON=""
+
+    mapfile -t release_fields <<< "$release_data"
+    if (( ${#release_fields[@]} != 5 )); then
+        echo -e "\033[31mNiekompletne dane wydania KeePassXC.\033[0m"
+        return 1
+    fi
+    version="${release_fields[0]}"
+    release_url="${release_fields[1]}"
+    archive_url="${release_fields[2]}"
+    signature_url="${release_fields[3]}"
+    digest_url="${release_fields[4]}"
+
+    echo "Aktualne stabilne wydanie KeePassXC: ${version}"
+    echo "Strona wydania: ${release_url}"
+    log_input_expected "operator ma zaakceptować wydanie KeePassXC ${version} dokładnym Y"
+    if ! read -r -p "Pobrać i zweryfikować to wydanie? Wpisz Y, aby kontynuować: " confirmation; then
+        echo
+        echo -e "\033[31mNie udało się odczytać decyzji operatora dla KeePassXC.\033[0m"
+        return 1
+    fi
+    echo
+    if [[ "$confirmation" != "Y" ]]; then
+        echo "Pobieranie KeePassXC pominięte przez operatora."
+        return 2
+    fi
+    log_input_confirmed "operator zaakceptował wydanie KeePassXC ${version}"
+
+    echo -e "\033[36m<<<<<===== Pobranie i weryfikacja KeePassXC ${version} =====>>>>>\033[0m"
+    download_keepassxc_release \
+        "$version" "$archive_url" "$signature_url" "$digest_url"
+}
+
 init_install_log
 printf 'META|ts=%s|stage=%s|format=archinstaller-log-v1|location=%s\n' "$(date '+%F %T')" "$LOG_STAGE" "$INSTALL_LOG_FILE" >> "$INSTALL_LOG_FILE"
 log_section "Start archconfig3.sh"
@@ -317,21 +601,22 @@ log_input_confirmed "operator potwierdził autoryzację sudo na początku archco
     done
 ) &
 SUDO_KEEPALIVE_PID=$!
-trap stop_sudo_keepalive EXIT
+trap cleanup_runtime EXIT
 
-echo -e "\033[36m<<<<<===== Pobranie źródeł KeePassXC ${KEEPASSXC_VERSION} =====>>>>>\033[0m"
-mkdir -p "/home/$(whoami)/Downloads/keepassxc"
-cd "/home/$(whoami)/Downloads/keepassxc"
-
-curl -fLO "https://github.com/keepassxreboot/keepassxc/releases/download/${KEEPASSXC_VERSION}/keepassxc-${KEEPASSXC_VERSION}-src.tar.xz"
-curl -fLO "https://github.com/keepassxreboot/keepassxc/releases/download/${KEEPASSXC_VERSION}/keepassxc-${KEEPASSXC_VERSION}-src.tar.xz.sig"
-curl -fLO "https://github.com/keepassxreboot/keepassxc/releases/download/${KEEPASSXC_VERSION}/keepassxc-${KEEPASSXC_VERSION}-src.tar.xz.DIGEST"
-curl -fLO "https://keepassxc.org/keepassxc_master_signing_key.asc"
-curl -fL "https://github.com/keepassxreboot/keepassxc/commit/139c0beb46d5a44244681202b7a936c4a1dbb133.patch" > keepassxc-botan-3.10.patch
-
-cd /home/matt
-echo "Źródła KeePassXC pobrane do /home/matt/Downloads/keepassxc."
-echo "Weryfikację i kompilację wykonaj ręcznie po instalacji."
+if offer_keepassxc_release; then
+    log_info "Pobrano i zweryfikowano opcjonalne źródła KeePassXC"
+else
+    keepassxc_result=$?
+    discard_keepassxc_staging
+    if (( keepassxc_result == 2 )); then
+        log_line "INFO" "KEEPASSXC_SKIPPED" \
+            "operator pominął opcjonalne pobieranie źródeł KeePassXC"
+    else
+        echo -e "\033[33mKrok KeePassXC nie powiódł się; instalator kontynuuje. Szczegóły są w logu.\033[0m"
+        log_line "WARN" "KEEPASSXC_FAILED" \
+            "opcjonalny krok KeePassXC nie powiódł się; etap 3 jest kontynuowany"
+    fi
+fi
 
 echo -e "\033[36m<<<<<===== Włączenie firejail =====>>>>>\033[0m"
 sudo apparmor_parser -r /etc/apparmor.d/firejail-default
