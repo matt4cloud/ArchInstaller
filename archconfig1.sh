@@ -480,42 +480,6 @@ EOF
 chmod 600 "${RECOVERY_DIR}/README.md"
 chown "${INSTALL_USER}:${INSTALL_USER}" "${RECOVERY_DIR}/README.md"
 
-echo -e "\033[36m<<<<<===== Automatyczne podpisywanie UKI po aktualizacjach =====>>>>>\033[0m"
-install -d /usr/local/bin /etc/pacman.d/hooks
-cat > /usr/local/bin/archinstaller-sign-uki <<'EOF'
-#!/usr/bin/env bash
-
-set -euo pipefail
-
-for uki_path in /efi/EFI/Linux/arch-linux.efi /efi/EFI/Linux/arch-linux-fallback.efi; do
-    if [[ -f "$uki_path" ]]; then
-        sbctl sign -s "$uki_path"
-    fi
-done
-EOF
-chmod 755 /usr/local/bin/archinstaller-sign-uki
-
-cat > /etc/pacman.d/hooks/95-archinstaller-sign-uki.hook <<'EOF'
-[Trigger]
-Type = Path
-Operation = Install
-Operation = Upgrade
-Target = usr/lib/initcpio/*
-Target = usr/lib/firmware/*
-Target = usr/lib/modules/*/extramodules/
-Target = usr/lib/modules/*/vmlinuz
-Target = usr/lib/systemd/systemd
-Target = usr/bin/cryptsetup
-
-[Action]
-Description = Podpisywanie UKI po aktualizacji pakietów...
-When = PostTransaction
-Exec = /usr/local/bin/archinstaller-sign-uki
-Depends = sbctl
-Depends = mkinitcpio
-NeedsTargets
-EOF
-
 echo -e "\033[36m<<<<<===== Instalacja NetworkManager =====>>>>>\033[0m"
 echo "Postęp instalacji pakietów będzie widoczny na ekranie."
 run_logged pacman -S --needed networkmanager --noconfirm
