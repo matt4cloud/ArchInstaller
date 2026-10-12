@@ -816,6 +816,18 @@ else
     log_info "Pominięto poprawkę RTS522A dla profilu ${MACHINE_PROFILE_ID}"
 fi
 
+echo -e "\033[36m<<<<<===== Wyłączenie pomiarów TPM systemd 262 =====>>>>>\033[0m"
+echo "systemd 262 bez podpisanej polityki PCR zgłasza błędy NvPCR; TPM nie służy tu do odblokowania."
+if sudo grep -qw 'systemd.tpm2_measured_os=0' /etc/kernel/cmdline; then
+    echo "Parametr systemd.tpm2_measured_os=0 jest już w /etc/kernel/cmdline."
+    log_info "Parametr systemd.tpm2_measured_os=0 już obecny w /etc/kernel/cmdline"
+else
+    sudo sed -i '$ s/$/ systemd.tpm2_measured_os=0/' /etc/kernel/cmdline
+    log_info "Dopisano systemd.tpm2_measured_os=0 do /etc/kernel/cmdline"
+    run_logged sudo mkinitcpio -P
+    run_logged sudo sbctl verify
+fi
+
 echo -e "\033[36m<<<<<===== Błędy po etapie 3 =====>>>>>\033[0m"
 journalctl -p 3 -xb || true
 systemctl --failed || true
