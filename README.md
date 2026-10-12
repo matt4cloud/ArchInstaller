@@ -4,7 +4,7 @@ Public snapshot of a private, four-stage Arch Linux installation workflow.
 This repository is a code publication boundary, not a complete project backup
 or a general-purpose Arch Linux installer.
 
-Current snapshot: `2.6.0`.
+Current snapshot: `2.6.1`.
 
 The workflow builds an opinionated system based on:
 
